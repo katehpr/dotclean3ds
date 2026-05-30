@@ -5,6 +5,7 @@
 * `.Trashes` & `.trashes`
 * `.fseventsd`
 * `.Spotlight-V100`
+* `.TemporaryItems`
 
 ### build instructions
 - you need devkitpro and devkitarm in path
