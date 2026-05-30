@@ -3,130 +3,172 @@
 #include <string.h>
 #include <dirent.h>
 #include <unistd.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <3ds.h>
 
-// Global counters for our summary
-int files_deleted = 0;
-int folders_deleted = 0;
+#define MAX_PATH 1024
 
-// Helper function to completely empty and delete a folder
-void remove_dir_recursively(const char* path) {
-    DIR* dir = opendir(path);
-    if (!dir) return;
+static int files_deleted = 0;
+static int folders_deleted = 0;
+static int scanned_items = 0;
 
-    struct dirent* ent;
-    while ((ent = readdir(dir)) != NULL) {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
-            continue;
-        }
+/* ---------------- PATH ---------------- */
 
-        char full_path[1024];
-        snprintf(full_path, sizeof(full_path), "%s/%s", path, ent->d_name);
+static void build_path(char *out, size_t size, const char *base, const char *name) {
+    size_t base_len = strlen(base);
+    size_t name_len = strlen(name);
 
-        struct stat st;
-        if (stat(full_path, &st) == 0) {
-            if (S_ISDIR(st.st_mode)) {
-                remove_dir_recursively(full_path);
-            } else {
-                unlink(full_path);
-                files_deleted++;
-            }
-        }
+    if (base_len + name_len + 2 >= size) {
+        strncpy(out, base, size - 1);
+        out[size - 1] = '\0';
+        return;
     }
-    closedir(dir);
-    rmdir(path); 
-    folders_deleted++;
+
+    if (base_len > 0 && base[base_len - 1] == '/') {
+        snprintf(out, size, "%s%s", base, name);
+    } else {
+        snprintf(out, size, "%s/%s", base, name);
+    }
 }
 
-// Main recursive function to scan the SD card
-void clean_directory(const char* path) {
-    DIR* dir = opendir(path);
-    if (!dir) return;
+/* ---------------- FILTERS ---------------- */
 
-    struct dirent* ent;
-    while ((ent = readdir(dir)) != NULL) {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
-            continue;
-        }
+static int is_junk_file(const char *name) {
+    return (strncmp(name, "._", 2) == 0 ||
+            strcmp(name, ".DS_Store") == 0 ||
+            strcmp(name, ".ds_store") == 0);
+}
 
-        char full_path[1024];
-        snprintf(full_path, sizeof(full_path), "%s/%s", path, ent->d_name);
+static int is_junk_dir(const char *name) {
+    return (strcmp(name, ".fseventsd") == 0 ||
+            strcmp(name, ".Trashes") == 0 ||
+            strcmp(name, ".trashes") == 0 ||
+            strcmp(name, ".Spotlight-V100") == 0 ||
+            strcmp(name, ".TemporaryItems") == 0);
+}
 
-        struct stat st;
-        if (stat(full_path, &st) == 0) {
-            if (S_ISDIR(st.st_mode)) {
-                if (strcmp(ent->d_name, ".fseventsd") == 0 || 
-                    strcmp(ent->d_name, ".Trashes") == 0 || 
-                    strcmp(ent->d_name, ".trashes") == 0 ||
-                    strcmp(ent->d_name, ".Spotlight-V100") == 0 ||
-                    strcmp(ent->d_name, ".TemporaryItems") == 0) {
-                    
-                    printf("Deleting folder: %s\n", full_path);
-                    remove_dir_recursively(full_path);
-                } else {
-                    clean_directory(full_path);
+/* ---------------- STACK ---------------- */
+
+typedef struct {
+    char path[MAX_PATH];
+} DirStack;
+
+static DirStack stack[1024];
+static int stack_top = 0;
+
+static void push(const char *path) {
+    if (stack_top >= 1024) return;
+    strncpy(stack[stack_top++].path, path, MAX_PATH);
+}
+
+static void scan_and_delete(const char *root) {
+    push(root);
+
+    while (stack_top > 0) {
+
+        char current[MAX_PATH];
+        strcpy(current, stack[--stack_top].path);
+
+        DIR *dir = opendir(current);
+        if (!dir) continue;
+
+        struct dirent *ent;
+
+        while ((ent = readdir(dir)) != NULL) {
+
+            if (strcmp(ent->d_name, ".") == 0 ||
+                strcmp(ent->d_name, "..") == 0)
+                continue;
+
+            scanned_items++;
+
+            char full[MAX_PATH];
+            build_path(full, sizeof(full), current, ent->d_name);
+
+            int is_dir = (ent->d_type == DT_DIR);
+
+            if (ent->d_type != DT_DIR && ent->d_type != DT_REG) {
+                struct stat st;
+                if (stat(full, &st) == 0)
+                    is_dir = S_ISDIR(st.st_mode);
+                else
+                    continue;
+            }
+
+            if (is_dir) {
+
+                push(full);
+
+                if (is_junk_dir(ent->d_name)) {
+
+                    if (rmdir(full) == 0) {
+                        folders_deleted++;
+                        printf("Deleted folder: %s\n", full);
+                    } else {
+                        printf("rmdir failed (%d): %s\n", errno, full);
+                    }
                 }
+
             } else {
-                if (strncmp(ent->d_name, "._", 2) == 0 || 
-                    strcmp(ent->d_name, ".DS_Store") == 0 || 
-                    strcmp(ent->d_name, ".ds_store") == 0) {
-                    
-                    printf("Deleting file: %s\n", full_path);
-                    unlink(full_path); 
-                    files_deleted++;
+
+                if (is_junk_file(ent->d_name)) {
+
+                    if (unlink(full) == 0) {
+                        files_deleted++;
+                        printf("Deleted file: %s\n", full);
+                    } else {
+                        printf("unlink failed (%d): %s\n", errno, full);
+                    }
                 }
             }
         }
+
+        closedir(dir);
     }
-    closedir(dir);
 }
 
-int main(int argc, char **argv) {
+/* ---------------- MAIN ---------------- */
+
+int main() {
     gfxInitDefault();
     consoleInit(GFX_TOP, NULL);
 
-    // Updated title with v1.1
-    printf("\x1b[1;1H--- dotclean3ds v1.1 ---");
-    printf("\x1b[2;1Hby kate");
-    
-    printf("\x1b[4;1HThis will recursively delete:");
-    printf("\x1b[5;1H- '._*' & '.DS_Store' files");
-    printf("\x1b[6;1H- '.Trashes' folders");
-    printf("\x1b[7;1H- '.fseventsd' folders");
-    printf("\x1b[8;1H- '.Spotlight-V100' folders");
-    printf("\x1b[9;1H- '.TemporaryItems' folders");
-    
-    printf("\x1b[11;1HPress A to start cleaning.");
-    printf("\x1b[12;1HPress START to exit.");
+    printf("--- dotclean3ds v1.2 by kate ---\n");
+    printf("A = START CLEANING\n");
+    printf("START = EXIT\n");
 
-    bool is_done = false;
+    bool running = false;
 
     while (aptMainLoop()) {
+
         hidScanInput();
         u32 kDown = hidKeysDown();
 
-        if (kDown & KEY_START) {
-            break; 
-        }
+        if (kDown & KEY_START)
+            break;
 
-        if ((kDown & KEY_A) && !is_done) {
+        if ((kDown & KEY_A) && !running) {
+
+            running = true;
+
             consoleClear();
-            printf("Cleaning... Please wait.\n\n");
-            
-            gfxFlushBuffers();
-            gfxSwapBuffers();
-            gspWaitForVBlank();
+
+            printf("Scanning + deleting sdmc:/ ...\n\n");
 
             files_deleted = 0;
             folders_deleted = 0;
+            scanned_items = 0;
+            stack_top = 0;
 
-            clean_directory("sdmc:/");
+            scan_and_delete("sdmc:/");
 
-            printf("\nDone! Your SD card is clean.\n");
-            printf("Removed %d files and %d folders.\n\n", files_deleted, folders_deleted);
-            printf("Press START to exit.\n");
-            is_done = true;
+            printf("\nDONE\n");
+            printf("Scanned: %d\n", scanned_items);
+            printf("Files deleted: %d\n", files_deleted);
+            printf("Folders deleted: %d\n", folders_deleted);
+
+            printf("\nPress START to exit\n");
         }
 
         gfxFlushBuffers();
