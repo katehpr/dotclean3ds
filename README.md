@@ -1,5 +1,5 @@
 # dotclean3ds
-### recursively finds and safely removes:
+### recursively finds and deletes:
 * `._*`
 * `.DS_Store`
 * `.Trashes` & `.trashes`
