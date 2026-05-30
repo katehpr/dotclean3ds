@@ -7,7 +7,7 @@
 * `.Spotlight-V100`
 
 ### build instructions
-you need devkitpro and devkitarm in path
-open folder in terminal
-make
-done
+- you need devkitpro and devkitarm in path
+- open folder in terminal
+- make
+- done
