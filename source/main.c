@@ -48,6 +48,48 @@ static int is_junk_dir(const char *name) {
             strcmp(name, ".TemporaryItems") == 0);
 }
 
+/* ---------------- RECURSIVE DELETE ---------------- */
+
+static void remove_dir_recursively(const char *path) {
+    DIR *dir = opendir(path);
+    if (!dir)
+        return;
+
+    struct dirent *ent;
+
+    while ((ent = readdir(dir)) != NULL) {
+
+        if (strcmp(ent->d_name, ".") == 0 ||
+            strcmp(ent->d_name, "..") == 0)
+            continue;
+
+        char full[MAX_PATH];
+        build_path(full, sizeof(full), path, ent->d_name);
+
+        struct stat st;
+        if (stat(full, &st) != 0)
+            continue;
+
+        if (S_ISDIR(st.st_mode)) {
+            remove_dir_recursively(full);
+        } else {
+            if (unlink(full) == 0) {
+                files_deleted++;
+                printf("Deleted file: %s\n", full);
+            }
+        }
+    }
+
+    closedir(dir);
+
+    if (rmdir(path) == 0) {
+        folders_deleted++;
+        printf("Deleted folder: %s\n", path);
+    } else {
+        printf("rmdir failed (%d): %s\n", errno, path);
+    }
+}
+
 /* ---------------- STACK ---------------- */
 
 typedef struct {
@@ -58,8 +100,12 @@ static DirStack stack[1024];
 static int stack_top = 0;
 
 static void push(const char *path) {
-    if (stack_top >= 1024) return;
-    strncpy(stack[stack_top++].path, path, MAX_PATH);
+    if (stack_top >= 1024)
+        return;
+
+    strncpy(stack[stack_top].path, path, MAX_PATH - 1);
+    stack[stack_top].path[MAX_PATH - 1] = '\0';
+    stack_top++;
 }
 
 static void scan_and_delete(const char *root) {
@@ -71,7 +117,8 @@ static void scan_and_delete(const char *root) {
         strcpy(current, stack[--stack_top].path);
 
         DIR *dir = opendir(current);
-        if (!dir) continue;
+        if (!dir)
+            continue;
 
         struct dirent *ent;
 
@@ -98,16 +145,15 @@ static void scan_and_delete(const char *root) {
 
             if (is_dir) {
 
-                push(full);
-
                 if (is_junk_dir(ent->d_name)) {
 
-                    if (rmdir(full) == 0) {
-                        folders_deleted++;
-                        printf("Deleted folder: %s\n", full);
-                    } else {
-                        printf("rmdir failed (%d): %s\n", errno, full);
-                    }
+                    printf("Removing junk folder: %s\n", full);
+                    remove_dir_recursively(full);
+
+                } else {
+
+                    push(full);
+
                 }
 
             } else {
@@ -134,7 +180,7 @@ int main() {
     gfxInitDefault();
     consoleInit(GFX_TOP, NULL);
 
-    printf("--- dotclean3ds v1.2 by kate ---\n");
+    printf("--- dotclean3ds v1.3 by kate ---\n");
     printf("A = START CLEANING\n");
     printf("START = EXIT\n");
 
